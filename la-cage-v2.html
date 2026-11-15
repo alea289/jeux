@@ -37,7 +37,7 @@ button:hover,button:focus-visible{background:var(--rust);outline:none}
 <canvas id="c"></canvas><div id="vig"></div><div id="dng"></div>
 <div class="hud"><span id="rl"></span><span id="bt"></span><span id="tm"></span></div>
 <div id="sn">Santé mentale<span><i></i></span></div><div id="msg"></div><div id="hint"></div>
-<div id="ov"><h1 id="ot">LA CAGE — v2</h1><p id="ob"></p><button id="go">Entrer dans le pavillon</button><button id="aib">Mode IA — gagne à tous les coups</button><button id="pv">Voir la cinématique</button><small id="os"></small></div>
+<div id="ov"><h1 id="ot">LA CAGE — v2</h1><p id="ob"></p><button id="go">Entrer dans le pavillon</button><button id="aib">Mode IA — joue seule, sans triche</button><button id="pv">Voir la cinématique</button><small id="os"></small></div>
 </div>
 <div id="tc"><div><button data-k="l">◀</button><button data-k="r">▶</button></div><div><button data-k="t">💡</button><button data-k="e">E</button><button data-k="b">▼</button><button data-k="f">▲</button></div></div>
 <script>
@@ -240,7 +240,6 @@ function update(dt){
   for(const m of mons){
     const d=Math.hypot(m.x-P.x,m.y-P.y);
     if(d<(hidden?.9:.55)&&!m.dead&&(m.t!='M'||m.mon)){
-      if(ai&&aiDodge(m))continue;
       return end(false,m);
     }
     if(m.t=='V'&&d>3.5)continue;
@@ -272,8 +271,29 @@ function interact(){
   else{state='note';ov('Un feuillet',NOTES[best.n],'Refermer','')}
 }
 /* ---------- IA (monstres mortels : esquive, cache, sprint) ---------- */
-let aiHt=0,aiCd=0,aiWait=0,aiDodgeCd=0,aiEscPath=null,aiEscT=0,aiDmCache={},aiNd=99;
-function aiThreats(){return mons.filter(m=>!m.dead&&(m.t!='M'||m.mon))}
+const aiMem={};
+function aiSight(m){
+  const dx=m.x-P.x,dy=m.y-P.y,d=Math.hypot(dx,dy);
+  if(d>9)return false;
+  const a=Math.atan2(dy,dx)-P.a,ang=Math.atan2(Math.sin(a),Math.cos(a));
+  if(Math.abs(ang)>Math.PI/3+.25)return false;
+  return los(m,9);
+}
+function aiKnow(dt){
+  for(const k in aiMem)aiMem[k].age+=dt;
+  for(const m of mons){
+    if(m.dead){delete aiMem[m];continue}
+    if(aiSight(m))aiMem[m]={x:m.x,y:m.y,tx:m.tx,ty:m.ty,t:m.t,mon:m.t=='M'&&m.mon===true,age:0};
+    else if(m.t=='V'){
+      const vm=dmap(m.x|0,m.y|0),vb=vm[P.y|0][P.x|0];
+      if(vb>=0&&vb<10)aiMem[m]={x:m.x,y:m.y,tx:m.tx,ty:m.ty,t:'V',mon:false,age:0};
+    }
+  }
+  for(const k in aiMem)if(aiMem[k].age>(aiMem[k].t=='V'?10:6))delete aiMem[k];
+}
+let aiHt=0,aiCd=0,aiWait=0,aiDodgeCd=0,aiEscPath=null,aiEscT=0,aiDmCache={},aiNd=99,aiObjC=null,aiObjT=0,aiEscMode=false,aiWasEsc=false;
+function aiThreats(){const th=[];for(const k in aiMem){const e=aiMem[k];if(e.t!='M'||e.mon)th.push({x:e.x,y:e.y,tx:e.tx,ty:e.ty,t:e.t,mon:e.mon,chase:e.age<.4})}return th}
+function aiMedics(){const ms=[];for(const k in aiMem){const e=aiMem[k];if(e.t=='M'&&!e.mon)ms.push({x:e.x,y:e.y})}return ms}
 function aiPts(th){
   const pts=[];
   for(const m of th){
@@ -295,7 +315,7 @@ function aiSafeHide(w,th){
   for(const m of th){
     if(Math.hypot(m.x-w.x,m.y-w.y)<1.5)return false;
     if(m.chase&&Math.hypot(m.tx-w.x,m.ty-w.y)<1.6)return false;
-    if(m.t=='C'&&m.chase&&m.dm){const a=m.dm[w.y|0][w.x|0],b=m.dm[m.y|0][m.x|0];if(a>=0&&b>=0&&a<=b+.5)return false}
+    if(m.t=='C'&&Math.hypot(m.x-w.x,m.y-w.y)<6)return false;
   }
   return true;
 }
@@ -303,7 +323,7 @@ function aiTarget(t){
   const list=items.filter(it=>!it.gone&&it.t==t);
   if(!list.length)return null;
   list.sort((a,b)=>Math.hypot(a.x-P.x,a.y-P.y)-Math.hypot(b.x-P.x,b.y-P.y));
-  const v=mons.find(m=>!m.dead&&m.t=='V');
+  const v=aiThreats().find(m=>m.t=='V');
   if(v&&list.length>1&&Math.hypot(list[0].x-v.x,list[0].y-v.y)<7.5)return list[1];
   return list[0];
 }
@@ -311,7 +331,7 @@ function aiTurn(gx,gy,dt,go,sp){
   const da=Math.atan2(gy-P.y,gx-P.x)-P.a,ang=Math.atan2(Math.sin(da),Math.cos(da));
   let nt=1e9;for(const o of aiThreats())nt=Math.min(nt,Math.hypot(o.x-P.x,o.y-P.y));
   const tol=nt<3?.8:.3;
-  if(Math.abs(ang)>tol){P.a+=Math.sign(ang)*Math.min(2.8*dt,Math.abs(ang));return}
+  if(Math.abs(ang)>tol){P.a+=Math.sign(ang)*Math.min(2.2*dt,Math.abs(ang));return}
   P.a+=ang;
   if(go)mv(Math.cos(P.a)*sp*dt,Math.sin(P.a)*sp*dt);
 }
@@ -338,7 +358,7 @@ function aiNav(dt,dm,pts,th,allowWait){
   }
   aiWait=0;
   let sp=2.1;
-  for(const m of th)if(Math.hypot(m.x-P.x,m.y-P.y)<5){sp=3.4;break}
+  for(const m of th)if(Math.hypot(m.x-P.x,m.y-P.y)<5){sp=2.1;break}
   aiTurn(best[0]+.5,best[1]+.5,dt,true,sp);
   const dd=doorAt();
   if(dd&&map[dd.y][dd.x]==2&&Math.hypot(dd.x+.5-P.x,dd.y+.5-P.y)<1.2)toggleDoor(dd);
@@ -368,8 +388,24 @@ function aiPlan(dt,th){
     for(let i=0;i<openQ.length;i++){const[x,y,d]=openQ[i];
       for(const[a,b]of[[1,0],[-1,0],[0,1],[0,-1]]){const X=x+a,Y=y+b;
         if((map[Y][X]===0||map[Y][X]===2)&&dOpen[Y][X]>d+1){dOpen[Y][X]=d+1;openQ.push([X,Y,d+1])}}}
+    let escM=1e9;
+    for(let i2=0;i2<th.length;i2++){const v=dms[i2][0][py][px];if(v>=0)escM=Math.min(escM,v/dms[i2][1])}
+    if(escM<2)aiEscMode=true;else if(escM>3)aiEscMode=false;
+    if(aiEscMode&&!aiWasEsc){aiEscT=0;aiDmCache={}}
+    aiWasEsc=aiEscMode;
     let obj=null;
-    if(bat<30)obj=aiTarget('B');
+    const vClose=th.some(m=>(m.t=='V'||(m.t=='M'&&m.mon))&&Math.hypot(m.x-P.x,m.y-P.y)<5.5);
+    if(vClose){
+      aiObjT-=dt;
+      if(aiObjC&&(aiObjC.gone||aiObjT<=0||!aiSafeHide(aiObjC,th)))aiObjC=null;
+      if(!aiObjC){
+        let bd=1e9;
+        for(const it of items)if(!it.gone&&it.t=='W'&&aiSafeHide(it,th)){const d=Math.hypot(it.x-P.x,it.y-P.y);if(d<bd){bd=d;aiObjC=it}}
+        aiObjT=4;
+      }
+      obj=aiObjC;
+    }else aiObjC=null;
+    if(!obj&&bat<30)obj=aiTarget('B');
     if(!obj&&relics<3)obj=aiTarget('R');
     if(!obj)obj=items.find(it=>!it.gone&&it.t=='D')||null;
     const dmo=obj?dmap(obj.x|0,obj.y|0):null,dc=dmo?dmo[py][px]:0;
@@ -380,17 +416,23 @@ function aiPlan(dt,th){
       let margin=1e9;
       for(let i2=0;i2<th.length;i2++){
         const v=dms[i2][0][Y][X];
-        if(v>=0)margin=Math.min(margin,v/dms[i2][1]-D/3.6);
+        if(v>=0)margin=Math.min(margin,v/dms[i2][1]-D/2.1);
       }
-      if(margin>2.5)margin=2.5;
+      if(aiEscMode){if(margin>6)margin=6}else if(margin>2.5)margin=2.5;
       let danger=0;
-      for(const m of th){const ed=Math.hypot(m.x-X-.5,m.y-Y-.5);if(ed<1.4)danger+=(1.4-ed)*30}
-      for(const m of mons)if(!m.dead&&m.t=='M'&&!m.mon){const ed=Math.hypot(m.x-X-.5,m.y-Y-.5);if(ed<3)danger+=(3-ed)*6}
+      for(const m of th){const ed=Math.hypot(m.x-X-.5,m.y-Y-.5);
+        if(m.t=='V')danger+=ed<9?(9-ed)*6:0;
+        else if(m.t=='E')danger+=ed<4?(4-ed)*10:0;
+        else if(m.t=='C')danger+=ed<4?(4-ed)*8:0;
+        else danger+=ed<1.4?(1.4-ed)*30:0;
+      }
+      for(const m of aiMedics()){const ed=Math.hypot(m.x-X-.5,m.y-Y-.5);if(ed<3.5)danger+=(3.5-ed)*60}
       let conn=0;
       for(const[a,b]of[[1,0],[-1,0],[0,1],[0,-1]]){const c=map[Y+b][X+a];if(c===0||c===2)conn++}
       const gain=dmo&&dmo[Y][X]>=0&&dc>=0?dc-dmo[Y][X]:0;
-      const vNear2=th.some(m=>m.t=='V'&&Math.hypot(m.x-P.x,m.y-P.y)<8);
-      const score=margin*10+gain*3+D*.05+conn*.3+Math.min(aiOpen2(X,Y),12)*.2-danger-Math.max(0,dOpen[Y][X]-2)*(vNear2?4:2);
+      const vNear2=th.some(m=>m.t=='V'&&Math.hypot(m.x-P.x,m.y-P.y)<5.5);
+      let score=margin*10+gain*(aiEscMode?1:3)+D*.05+conn*.3-danger-Math.max(0,dOpen[Y][X]-2)*(vNear2?3:1);
+      if(Y>=6&&Y<=8&&X>8)score-=aiNd<5.5&&!th.length?6:3;
       if(score>bs){bs=score;best=[X,Y]}
       for(const[a,b]of[[1,0],[-1,0],[0,1],[0,-1]]){
         const X2=X+a,Y2=Y+b,k=Y2*100+X2;
@@ -406,8 +448,9 @@ function aiPlan(dt,th){
   while(aiEscPath.length&&Math.hypot(aiEscPath[0][0]+.5-P.x,aiEscPath[0][1]+.5-P.y)<.35)aiEscPath.shift();
   const tgt=aiEscPath[0];
   if(tgt){
-    P.a=Math.atan2(tgt[1]+.5-P.y,tgt[0]+.5-P.x);
-    mv(Math.cos(P.a)*3.6*dt,Math.sin(P.a)*3.6*dt);
+    const da=Math.atan2(tgt[1]+.5-P.y,tgt[0]+.5-P.x)-P.a,ang=Math.atan2(Math.sin(da),Math.cos(da));
+    if(Math.abs(ang)>2.2*dt)P.a+=Math.sign(ang)*2.2*dt;else P.a+=ang;
+    if(Math.abs(ang)<.7)mv(Math.cos(P.a)*2.1*dt,Math.sin(P.a)*2.1*dt);
     const dd=doorAt();
     if(dd&&map[dd.y][dd.x]==2&&Math.hypot(dd.x+.5-P.x,dd.y+.5-P.y)<1.2)toggleDoor(dd);
   }
@@ -438,7 +481,10 @@ function aiDodge(m){
 }
 function aiStep(dt){
   aiCd-=dt;aiDodgeCd-=dt;
+  aiKnow(dt);
   const th=aiThreats();
+  let hb=99;
+  for(const m of mons)if(!m.dead)hb=Math.min(hb,Math.hypot(m.x-P.x,m.y-P.y));
   let near=null,nd=1e9,mmon=null,md=1e9;
   for(const m of th){
     const d=Math.hypot(m.x-P.x,m.y-P.y);
@@ -448,17 +494,17 @@ function aiStep(dt){
   if(hidden){
     aiHt-=dt;
     let out=true;
-    for(const m of th){const d=Math.hypot(m.x-P.x,m.y-P.y);if(m.t=='V'?d<7.2&&d>2.5:d<2.6)out=false;if(m.t=='V'&&d<=2.5)out=true}
+    for(const m of th){const d=Math.hypot(m.x-P.x,m.y-P.y);if(m.t=='V'?(d<5&&aiHt>0):(d<2.6))out=false}
     if(out||aiHt<=0){hidden=null;aiCd=2}
     return;
   }
   const whd=items.find(it=>!it.gone&&it.t=='W'&&Math.hypot(it.x-P.x,it.y-P.y)<1.5);
   if(near&&nd<4.5&&whd&&aiSafeHide(whd,th)){
-    hidden=whd;P.x=whd.x;P.y=whd.y;aiHt=near.t=='V'?25:12;flash('L\u2019IA se cache.');return;
+    hidden=whd;P.x=whd.x;P.y=whd.y;aiHt=near.t=='V'?1.6:12;flash('L\u2019IA se cache.');return;
   }
-  aiNd=nd;
-  if(near&&nd<1.1&&aiDodge(near))return;
-  aiPlan(dt,mons.filter(m=>!m.dead));
+  aiNd=hb;
+  if(false)return;
+  aiPlan(dt,aiThreats());
 }
 function fmt(s){return Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0')}
 function end(win,m){
@@ -515,7 +561,7 @@ function render(t){
   if(hidden){ctx.fillStyle='#000';ctx.fillRect(0,0,W,H*.42);ctx.fillRect(0,H*.42+12,W,H)}
   drawScare();drawCine();
 }
-function fright(n){if(ai)return;san=Math.max(0,san-n);if(san<=0&&state=='play')startCine()}
+function fright(n){san=Math.max(0,san-n);if(san<=0&&state=='play')startCine()}
 function startCine(){state='cine';cineT=0;cineB=0;hidden=null;keys={};scare=null;$('dng').style.opacity=0;noise(.8,.5);beep(40,.9,2,'sine')}
 function cine(dt){
   cineT+=dt;cineB-=dt;if(cineB<=0){beat(1);cineB=.55}
